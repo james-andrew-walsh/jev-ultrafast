@@ -28,12 +28,24 @@ class Browser:
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
-        self.call("Page.navigate", url=url)
-        deadline = time.monotonic() + 15
+        self.goto(url)
+
+    def goto(self, url):
+        # Mark this document so a slow navigation cannot be mistaken for the next page.
+        self.evaluate("window.__jevLeaving = true")
+        result = self.call("Page.navigate", url=url, _response_timeout=20)
+        if result.get("errorText"):
+            return result["errorText"]
+        state, deadline = "old", time.monotonic() + 15
         while time.monotonic() < deadline:
-            if self.evaluate("document.readyState") == "complete":
+            try:
+                state = self.evaluate("window.__jevLeaving ? 'old' : document.readyState")
+            except (StalePage, RuntimeError):
+                state = "old"
+            if state == "complete":
                 break
             time.sleep(0.02)
+        return "Navigation did not finish" if state == "old" else None
 
     def call(self, method, **params):
         return cdp(method, session_id=self.session, **params)

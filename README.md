@@ -91,6 +91,18 @@ uv run --env-file .env python examples/run.py \
 
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
+## Collect Blue Book companies
+
+`jev-bluebook` saves company names, websites, and public email addresses from a Blue Book search to a CSV. It makes no model calls: addresses are read from page text and `mailto:` links, so they cannot be invented.
+
+```bash
+uv run jev-bluebook "https://www.thebluebook.com/search.html?class=1760&region=34" --out artifacts/companies.csv
+```
+
+`region` picks the area (`34` is Nevada). Results cover the whole region; a `city=Reno,NV` value did not move an Arizona search to Reno. Add `--limit 5` for a short test. Each company costs its Blue Book contact page plus up to three pages of its own site, with a 2-second `--delay` before each visit.
+
+The CSV is written row by row, and `status` explains every gap. Company sites are skipped when their `robots.txt` disallows the visit. A bot check stops the run and keeps the results so far; it is never bypassed. The Blue Book's terms require Dodge Construction Network's prior written consent for automated access.
+
 ## Why it moves
 
 - **One request per decision cycle.** Operation and target heads share the same observed state.
