@@ -71,6 +71,70 @@ def test_listing_site_addresses_are_not_company_emails():
     assert bluebook.extract_emails(web_page(text="help@thebluebook.com info@mail.construction.com")) == []
 
 
+def test_main_location_wins_over_other_branches():
+    page = {
+        **web_page(),
+        "locations": [
+            {"main": False, "address": "1 Branch Rd., Reno, NV 89501"},
+            {"main": True, "address": "2 Main St., Suite 7, Fresno, CA 93723"},
+        ],
+    }
+    assert bluebook.main_address(page) == "2 Main St., Suite 7, Fresno, CA 93723"
+
+
+def test_first_location_is_used_when_none_is_marked_main():
+    page = {**web_page(), "locations": [{"main": False, "address": "1 Branch Rd., Reno, NV 89501"}]}
+    assert bluebook.main_address(page) == "1 Branch Rd., Reno, NV 89501"
+
+
+def test_address_comes_only_from_location_cards():
+    assert bluebook.main_address(web_page(text="Headquarters: 56 Broad Street Boston, MA 02109")) == ""
+
+
+def test_address_reaches_the_row_even_without_a_website(rows):
+    collected, writer = rows
+    contact = card(1)["contact_url"]
+    profile = {**web_page(contact), "locations": [{"main": True, "address": "2 Main St., Fresno, CA 93723"}]}
+    browser = FakeBrowser({contact: profile}, [{"title": "", "text": "", "cards": [card(1, website="")], "next": ""}])
+    bluebook.collect(browser, "start", writer, max_pages=1, limit=9, delay=0)
+    assert collected[0]["address"] == "2 Main St., Fresno, CA 93723"
+    assert collected[0]["status"] == "no website listed"
+
+
+def test_header_city_is_used_when_there_is_no_location_card():
+    page = web_page(text="Burdick Excavating Co., Inc.\nMound House, NV 89721\nPre-Qual\nHome")
+    assert bluebook.main_address(page) == "Mound House, NV 89721"
+
+
+def test_footer_address_is_never_taken_for_the_company():
+    filler = "\n".join(["Services and capabilities listed here"] * 30)
+    page = web_page(text=f"Acme\n{filler}\nHeadquarters:\n56 Broad Street\nBoston, MA 02109")
+    assert bluebook.main_address(page) == ""
+
+
+def test_generic_contact_link_goes_through_the_company_profile(rows):
+    collected, writer = rows
+    profile_url = "https://www.thebluebook.com/iProView/7"
+    contact = "https://www.thebluebook.com/iProView/7/armac/subcontractors/locations-contacts/"
+    listing = {
+        **card(7, website=""),
+        "profile_url": profile_url,
+        "contact_url": "https://www.thebluebook.com/locations-contacts/",
+    }
+    pages = {
+        profile_url: web_page(profile_url, links=[(contact, "Contact Us")]),
+        contact: {
+            **web_page(contact, links=[("https://armac.com/", "Website")]),
+            "locations": [{"main": True, "address": "343 Sairview Dr., Carson City, NV 89701"}],
+        },
+    }
+    browser = FakeBrowser(pages, [{"title": "", "text": "", "cards": [listing], "next": ""}])
+    bluebook.collect(browser, "start", writer, max_pages=1, limit=9, delay=0)
+    assert "https://www.thebluebook.com/locations-contacts/" not in browser.visited
+    assert collected[0]["address"] == "343 Sairview Dr., Carson City, NV 89701"
+    assert collected[0]["website"] == "https://armac.com/"
+
+
 def test_contact_links_stay_on_site_and_prefer_contact_pages():
     page = web_page(
         links=[
@@ -115,6 +179,13 @@ def test_unreachable_robots_rules_keep_the_tool_out(monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(bluebook.httpx, "get", Mock(side_effect=httpx.ConnectError("offline")))
     assert bluebook.allowed("https://acme.com/") is False
+
+
+def test_momentary_robots_failure_is_tried_again(monkeypatch):
+    monkeypatch.undo()
+    responses = [httpx.ConnectError("blip"), httpx.Response(200, text="User-agent: *\n")]
+    monkeypatch.setattr(bluebook.httpx, "get", Mock(side_effect=responses))
+    assert bluebook.allowed("https://acme.com/") is True
 
 
 def test_redirect_to_a_site_that_excludes_visitors_is_not_read(monkeypatch):

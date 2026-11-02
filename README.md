@@ -93,7 +93,7 @@ uv run --env-file .env python examples/run.py \
 
 ## Collect Blue Book companies
 
-`jev-bluebook` saves company names, websites, and public email addresses from a Blue Book search to a CSV. It makes no model calls: addresses are read from page text and `mailto:` links, so they cannot be invented.
+`jev-bluebook` saves company names, websites, street addresses, and public email addresses from a Blue Book search to a CSV. It makes no model calls: emails are read from page text and `mailto:` links, and street addresses from each company's Blue Book location card, so neither can be invented.
 
 ```bash
 uv run jev-bluebook "https://www.thebluebook.com/search.html?class=1760&region=34" --out artifacts/companies.csv

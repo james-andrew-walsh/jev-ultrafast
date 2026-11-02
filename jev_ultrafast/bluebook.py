@@ -1,4 +1,4 @@
-"""Collect company names, websites, and public emails from a Blue Book search. No model calls."""
+"""Collect company names, websites, addresses, and public emails from a Blue Book search. No model calls."""
 
 import argparse
 import csv
@@ -13,10 +13,13 @@ import httpx
 
 from .browser import Browser
 
-FIELDS = ["company", "website", "emails", "email_sources", "profile_url", "status"]
+FIELDS = ["company", "website", "address", "emails", "email_sources", "profile_url", "status"]
 MAX_SITE_PAGES = 3
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 CONTACT_LINK = re.compile(r"contact|about|team|staff|people", re.I)
+HEADER_CITY = re.compile(r"^[A-Za-z .'-]+, [A-Z]{2} \d{5}(?:-\d{4})?[ \t]*$", re.M)
+HEADER_LENGTH = 300
+RETRIED_ERRORS = {"net::ERR_ABORTED", "net::ERR_BLOCKED_BY_CLIENT"}
 BOT_CHECK = re.compile(r"just a moment|attention required|are you (a )?human|verify you|access denied|captcha", re.I)
 FILE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js", ".pdf", ".zip", ".doc", ".docx")
 LISTING_DOMAINS = ("thebluebook.com", "construction.com")
@@ -54,6 +57,14 @@ READ_PAGE = """(() => ({
   title: document.title,
   text: document.body?.innerText || '',
   mailto: [...document.querySelectorAll('a[href^="mailto:" i]')].map(a => a.getAttribute('href')),
+  locations: [...document.querySelectorAll('.card.bg-light')].flatMap(card => {
+    const block = [...card.querySelectorAll('div')]
+      .find(e => !e.children.length && /\\b[A-Z]{2}\\s+\\d{5}/.test(e.textContent));
+    return block ? [{
+      main: /Main Location/i.test(card.textContent),
+      address: block.textContent.trim().replace(/\\s*\\n\\s*/g, ', '),
+    }] : [];
+  }),
   links: [...document.querySelectorAll('a[href]')].slice(0, 500)
     .map(a => ({href: a.href, text: a.textContent.trim().slice(0, 80)})),
 }))()"""
@@ -118,13 +129,26 @@ def profile_website(page):
     )
 
 
+def main_address(page):
+    """Prefer a location card, then the profile header's city; the page footer holds Dodge's own headquarters."""
+    locations = page.get("locations", [])
+    address = next((location["address"] for location in locations if location["main"]), "") or (
+        locations[0]["address"] if locations else ""
+    )
+    header = HEADER_CITY.search(page["text"][:HEADER_LENGTH])
+    return address or (header.group().strip() if header else "")
+
+
 def allowed(url):
     """Apply each company site's own robots.txt as RFC 9309 does: 4xx means no rules; unreachable means stay out."""
     parts = urlsplit(url)
-    try:
-        response = httpx.get(f"{parts.scheme}://{parts.netloc}/robots.txt", follow_redirects=True, timeout=5)
-    except httpx.HTTPError:
-        return False
+    for attempt in range(2):
+        try:
+            response = httpx.get(f"{parts.scheme}://{parts.netloc}/robots.txt", follow_redirects=True, timeout=5)
+            break
+        except httpx.HTTPError:
+            if attempt:
+                return False
     if response.status_code >= 500:
         return False
     if response.is_error:
@@ -141,8 +165,8 @@ def check_bot(page):
 
 def navigate(browser, url):
     error = browser.goto(url)
-    if error == "net::ERR_ABORTED":
-        # The page can cancel a navigation with one of its own. Loading a page changes nothing, so try again once.
+    if error in RETRIED_ERRORS:
+        # These can be momentary, and loading a page changes nothing, so try again once.
         time.sleep(1)
         error = browser.goto(url)
     if error:
@@ -178,10 +202,26 @@ def website_emails(browser, website, delay):
     return found, visited, None
 
 
-def company_row(browser, card, delay):
+def contact_page(browser, card, delay):
+    """Basic listings link to the Blue Book's own contact page, so find the company's page from its profile."""
     time.sleep(delay)
-    page = read_page(browser, card["contact_url"] or card["profile_url"])
+    specific = "/iProView/" in card["contact_url"]
+    page = read_page(browser, card["contact_url"] if specific else card["profile_url"])
     check_bot(page)
+    if not specific:
+        link = next(
+            (x["href"] for x in page["links"] if "/iProView/" in x["href"] and "locations-contacts" in x["href"]),
+            "",
+        )
+        if link:
+            time.sleep(delay)
+            page = read_page(browser, link)
+            check_bot(page)
+    return page
+
+
+def company_row(browser, card, delay):
+    page = contact_page(browser, card, delay)
     website = card["website"] if card["website"] and not is_listing(card["website"]) else profile_website(page)
     website = clean_website(website) if website else ""
     found = {email: page["url"] for email in extract_emails(page)}
@@ -197,6 +237,7 @@ def company_row(browser, card, delay):
     return {
         "company": card["company"],
         "website": website,
+        "address": main_address(page),
         "emails": "; ".join(found),
         "email_sources": "; ".join(found.values()),
         "profile_url": card["profile_url"],
@@ -241,6 +282,7 @@ def collect(browser, url, writer, *, max_pages, limit, delay):
                 row, failure = {
                     "company": card["company"],
                     "website": "",
+                    "address": "",
                     "emails": "",
                     "email_sources": "",
                     "profile_url": card["profile_url"],
@@ -248,7 +290,11 @@ def collect(browser, url, writer, *, max_pages, limit, delay):
                 }, str(error)
             writer.send(row)
             written += 1
-            print(f"{written}. {row['company']}: {row['status']}, {row['emails'] or 'no emails'}", flush=True)
+            print(
+                f"{written}. {row['company']}: {row['status']}, {row['address'] or 'no address'}, "
+                f"{row['emails'] or 'no emails'}",
+                flush=True,
+            )
             if failure:
                 browser = reopen(browser)
         url = results["next"]
