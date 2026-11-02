@@ -18,9 +18,12 @@ class StalePage(ValueError):
 
 
 class Browser:
-    def __init__(self, url):
+    def __init__(self, url, background=True):
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        # A visible run gets its own window; a tab beside the inspector would be hidden when it is clicked.
+        self.target = cdp(
+            "Target.createTarget", url="about:blank", background=background, newWindow=not background
+        )["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
@@ -190,5 +193,9 @@ def browser_operation(request):
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
     if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        # Optional and read-only: a tab Chrome is not painting can stall this, which must not end the run.
+        try:
+            info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        except TimeoutError:
+            info["screenshot"] = None
     return info

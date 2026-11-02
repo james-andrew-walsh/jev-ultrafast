@@ -10,13 +10,13 @@ from .questions import MAX_STEPS
 
 
 class Agent:
-    def __init__(self, url, goals, *, record_dir=None, screenshots=False):
+    def __init__(self, url, goals, *, record_dir=None, screenshots=False, background=True):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         plan = [task]
         self.pending_text = None
-        self.browser = Browser(url)
+        self.browser = Browser(url, background=background)
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
         try:
@@ -41,7 +41,8 @@ class Agent:
         )
         if self.record_dir:
             self.record_dir.mkdir(parents=True, exist_ok=True)
-            (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
+            if page["screenshot"]:
+                (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
 
     def snapshot(self):
         return {
@@ -146,7 +147,7 @@ class Agent:
                 url=state["page"]["url"],
                 elapsed_ms=state["elapsed_ms"],
             )
-            if state["record"]:
+            if state["record"] and state["page"]["screenshot"]:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])
                 )

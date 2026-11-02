@@ -57,6 +57,7 @@ def command(name, body):
             else f"{ORIGIN}/fixture.html?scenario={scenario}",
             goal,
             screenshots=True,
+            background=False,
             record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
         )
         AGENT.state["scenario"] = scenario
